@@ -13,6 +13,15 @@ let receivedSum = 0; // Сумма, которую получили
 let lastResetDate = getPolandTime().toISOString(); // Время последнего сброса в польском часовом поясе
 let lastInput = null; // 'expected' или 'received' - что было введено последним
 
+// Статистика и мониторинг бота
+let botStats = {
+	totalMessages: 0, // Общее количество сообщений
+	totalUsers: new Set(), // Уникальные пользователи
+	messagesLastHour: [], // Сообщения за последний час
+	startTime: getPolandTime().toISOString(), // Время запуска бота
+	lastActivity: getPolandTime().toISOString() // Последняя активность
+};
+
 // Состояние пользователя для каждого чата
 const userStates = new Map(); // chatId -> { mode: 'waiting_expected' | 'waiting_received' | null }
 
@@ -24,6 +33,74 @@ function scheduleDelete(chatId, messageId, delayMs) {
 	setTimeout(async () => {
 		await deleteMessage(chatId, messageId);
 	}, delayMs);
+}
+
+// Обновление статистики бота
+function updateBotStats(chatId) {
+	const now = getPolandTime();
+	
+	// Обновляем общую статистику
+	botStats.totalMessages++;
+	botStats.totalUsers.add(chatId);
+	botStats.lastActivity = now.toISOString();
+	
+	// Добавляем сообщение в список за последний час
+	botStats.messagesLastHour.push(now.getTime());
+	
+	// Очищаем сообщения старше часа
+	const oneHourAgo = now.getTime() - (60 * 60 * 1000);
+	botStats.messagesLastHour = botStats.messagesLastHour.filter(timestamp => timestamp > oneHourAgo);
+}
+
+// Получение текущего статуса бота
+function getBotStatus() {
+	const now = getPolandTime();
+	const hour = now.getHours();
+	const messagesThisHour = botStats.messagesLastHour.length;
+	
+	// Определяем статус по времени дня
+	let timeStatus = "";
+	if (hour >= 6 && hour < 12) {
+		timeStatus = "🌅 Утро";
+	} else if (hour >= 12 && hour < 18) {
+		timeStatus = "☀️ День";
+	} else if (hour >= 18 && hour < 22) {
+		timeStatus = "🌆 Вечер";
+	} else {
+		timeStatus = "🌙 Ночь";
+	}
+	
+	// Определяем нагрузку
+	let loadStatus = "";
+	if (messagesThisHour === 0) {
+		loadStatus = "😴 Спящий режим";
+	} else if (messagesThisHour <= 5) {
+		loadStatus = "🟢 Низкая нагрузка";
+	} else if (messagesThisHour <= 15) {
+		loadStatus = "🟡 Средняя нагрузка";
+	} else if (messagesThisHour <= 30) {
+		loadStatus = "🟠 Высокая нагрузка";
+	} else {
+		loadStatus = "🔴 Пиковая нагрузка";
+	}
+	
+	return { timeStatus, loadStatus, messagesThisHour };
+}
+
+// Получение времени работы бота
+function getBotUptime() {
+	const now = getPolandTime();
+	const startTime = new Date(botStats.startTime);
+	const uptimeMs = now.getTime() - startTime.getTime();
+	
+	const hours = Math.floor(uptimeMs / (1000 * 60 * 60));
+	const minutes = Math.floor((uptimeMs % (1000 * 60 * 60)) / (1000 * 60));
+	
+	if (hours > 0) {
+		return `${hours}ч ${minutes}мин`;
+	} else {
+		return `${minutes}мин`;
+	}
 }
 
 // Получение текущей даты в польском часовом поясе в формате YYYY-MM-DD
@@ -216,6 +293,7 @@ function createMainMenu() {
 // Главное сообщение с текущими суммами
 export async function showMainInterface(chatId, messageId = null) {
 	checkDateAndReset();
+	updateBotStats(chatId); // Обновляем статистику
 
 	const date = getReadableDate();
 	const difference = receivedSum - expectedSum;
@@ -232,6 +310,10 @@ export async function showMainInterface(chatId, messageId = null) {
 		? "сегодня в 11:00" 
 		: "завтра в 11:00";
 
+	// Получаем динамический статус бота
+	const { timeStatus, loadStatus, messagesThisHour } = getBotStatus();
+	const uptime = getBotUptime();
+
 	const text = `💰 <b>Калькулятор чая для Dominos</b>
 	
 📅 <i>${date}</i>
@@ -240,6 +322,7 @@ export async function showMainInterface(chatId, messageId = null) {
 📊 Твой напивек: <b>${differenceText}</b>
 
 🕐 <i>Автосброс ${nextResetInfo} (польское время)</i>
+
 <i>Используйте кнопки для ввода сумм</i>`;
 
 	const keyboard = createMainMenu();
@@ -254,6 +337,7 @@ export async function showMainInterface(chatId, messageId = null) {
 // Обработка команды /итог с красивым форматированием
 export async function summaryCommand(chatId, messageId = null) {
 	checkDateAndReset();
+	updateBotStats(chatId); // Обновляем статистику
 
 	const date = getReadableDate();
 	const difference = receivedSum - expectedSum;
@@ -276,6 +360,10 @@ export async function summaryCommand(chatId, messageId = null) {
 		statusText = "Убыток";
 	}
 
+	// Получаем информацию о боте
+	const { timeStatus, loadStatus } = getBotStatus();
+	const uptime = getBotUptime();
+
 	// Создаем отдельное сообщение с итогом
 	const summaryText = `${statusEmoji} <b>${statusText}</b>
 
@@ -283,6 +371,10 @@ export async function summaryCommand(chatId, messageId = null) {
 🎯 Ожидалось: <b>${expectedSum}</b>
 🏧 Получено: <b>${receivedSum}</b>
 📊 Разность: <b>${differenceText}</b>
+
+🤖 <b>Статус системы:</b>
+${timeStatus} • ${loadStatus}
+⏱️ Работает: ${uptime} • 👥 Всего пользователей: ${botStats.totalUsers.size}
 
 ✅ <i>Данные сброшены</i>`;
 
@@ -318,6 +410,7 @@ export async function handleNumberInput(
 	mainMenuMessageId = null
 ) {
 	checkDateAndReset();
+	updateBotStats(chatId); // Обновляем статистику
 
 	// Удаляем сообщение пользователя для чистоты чата
 	await deleteMessage(chatId, userMessageId);
@@ -376,6 +469,11 @@ export async function handleNumberInput(
 
 // Показать справку
 export async function showHelp(chatId, messageId = null) {
+	updateBotStats(chatId); // Обновляем статистику
+	
+	const { timeStatus, loadStatus } = getBotStatus();
+	const uptime = getBotUptime();
+	
 	const text = `ℹ️ <b>Справка по боту</b>
 
 🎯 <b>Как пользоваться:</b>
@@ -390,8 +488,13 @@ export async function showHelp(chatId, messageId = null) {
 
 💡 <b>Особенности:</b>
 • Расчет разности между суммами
-• Автоматический сброс каждый день
-• Красивые уведомления о прибыли/убытках`;
+• Автоматический сброс каждый день в 11:00
+• Полное автоудаление сообщений пользователя
+• Мониторинг активности в реальном времени
+
+🤖 <b>Статус бота:</b>
+${timeStatus} • ${loadStatus}
+⏱️ Работает: ${uptime} • 🇵🇱 Польское время`;
 
 	const keyboard = {
 		inline_keyboard: [
@@ -431,6 +534,7 @@ export async function pinMessage(chatid, messageId) {
 
 // Установка режима ввода ожидаемой суммы
 export async function setExpectedInputMode(chatId, messageId = null) {
+	updateBotStats(chatId); // Обновляем статистику
 	userStates.set(chatId, { mode: "waiting_expected" });
 
 	const text = `🎯 <b>Ввод ожидаемой суммы</b>
@@ -454,6 +558,7 @@ export async function setExpectedInputMode(chatId, messageId = null) {
 
 // Установка режима ввода полученной суммы
 export async function setReceivedInputMode(chatId, messageId = null) {
+	updateBotStats(chatId); // Обновляем статистику
 	userStates.set(chatId, { mode: "waiting_received" });
 
 	const text = `💸 <b>Ввод полученной суммы</b>
@@ -477,6 +582,8 @@ export async function setReceivedInputMode(chatId, messageId = null) {
 
 // Сброс всех данных
 export async function resetData(chatId, messageId = null) {
+	updateBotStats(chatId); // Обновляем статистику
+	
 	expectedSum = 0;
 	receivedSum = 0;
 	lastInput = null;
@@ -496,6 +603,8 @@ export async function resetData(chatId, messageId = null) {
 
 // Сброс последнего ввода
 export async function resetLastInput(chatId, messageId = null) {
+	updateBotStats(chatId); // Обновляем статистику
+	
 	if (!lastInput) {
 		// Если нет последнего ввода
 		const notification = await sendMessage(chatId, "❌ Нет данных для сброса");
