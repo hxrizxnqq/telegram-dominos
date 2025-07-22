@@ -5,6 +5,7 @@ const TELEGRAM_API_URL = `https://api.telegram.org/bot${process.env.BOT_TOKEN}`;
 let expectedSum = 0; // Сумма, которую должны получить
 let receivedSum = 0; // Сумма, которую получили
 let lastResetDate = getTodayDate();
+let lastInput = null; // 'expected' или 'received' - что было введено последним
 
 // Состояние пользователя для каждого чата
 const userStates = new Map(); // chatId -> { mode: 'waiting_expected' | 'waiting_received' | null }
@@ -35,6 +36,7 @@ function checkDateAndReset() {
 	if (today !== lastResetDate) {
 		expectedSum = 0;
 		receivedSum = 0;
+		lastInput = null;
 		lastResetDate = today;
 		// Очищаем состояния пользователей
 		userStates.clear();
@@ -162,7 +164,10 @@ function createMainMenu() {
 			],
 			[
 				{ text: "📊 Показать итог", callback_data: "show_summary" },
-				{ text: "🔄 Сбросить", callback_data: "reset_sum" },
+			],
+			[
+				{ text: "🔄 Сбросить всё", callback_data: "reset_sum" },
+				{ text: "↩️ Сбросить последний", callback_data: "reset_last" },
 			],
 			[{ text: "ℹ️ Справка", callback_data: "help" }],
 		],
@@ -288,10 +293,12 @@ export async function handleNumberInput(
 	
 	if (userState.mode === 'waiting_expected') {
 		expectedSum = number;
+		lastInput = 'expected';
 		notification = `🎯 Ожидаемая сумма: ${number}`;
 		userStates.delete(chatId); // Очищаем режим
 	} else if (userState.mode === 'waiting_received') {
 		receivedSum = number;
+		lastInput = 'received';
 		notification = `💸 Полученная сумма: ${number}`;
 		userStates.delete(chatId); // Очищаем режим
 	}
@@ -408,5 +415,59 @@ export async function setReceivedInputMode(chatId, messageId = null) {
 		return await editMessage(chatId, messageId, text, keyboard);
 	} else {
 		return await sendMessage(chatId, text, keyboard);
+	}
+}
+
+// Сброс всех данных
+export async function resetData(chatId, messageId = null) {
+	expectedSum = 0;
+	receivedSum = 0;
+	lastInput = null;
+	userStates.delete(chatId); // Очищаем состояние пользователя
+	
+	// Отправляем уведомление о сбросе
+	const notification = await sendMessage(chatId, "🔄 Все данные сброшены");
+	if (notification && notification.result) {
+		scheduleDelete(chatId, notification.result.message_id, 1500);
+	}
+	
+	// Обновляем главное меню
+	if (messageId) {
+		await showMainInterface(chatId, messageId);
+	}
+}
+
+// Сброс последнего ввода
+export async function resetLastInput(chatId, messageId = null) {
+	if (!lastInput) {
+		// Если нет последнего ввода
+		const notification = await sendMessage(chatId, "❌ Нет данных для сброса");
+		if (notification && notification.result) {
+			scheduleDelete(chatId, notification.result.message_id, 2000);
+		}
+		return;
+	}
+	
+	let resetText = "";
+	if (lastInput === 'expected') {
+		expectedSum = 0;
+		resetText = "↩️ Ожидаемая сумма сброшена";
+	} else if (lastInput === 'received') {
+		receivedSum = 0;
+		resetText = "↩️ Полученная сумма сброшена";
+	}
+	
+	lastInput = null; // Очищаем информацию о последнем вводе
+	userStates.delete(chatId); // Очищаем состояние пользователя
+	
+	// Отправляем уведомление о сбросе
+	const notification = await sendMessage(chatId, resetText);
+	if (notification && notification.result) {
+		scheduleDelete(chatId, notification.result.message_id, 1500);
+	}
+	
+	// Обновляем главное меню
+	if (messageId) {
+		await showMainInterface(chatId, messageId);
 	}
 }

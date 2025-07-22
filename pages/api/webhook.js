@@ -7,6 +7,8 @@ import {
 	showHelp,
 	setExpectedInputMode,
 	setReceivedInputMode,
+	resetData,
+	resetLastInput,
 	answerCallbackQuery,
 	deleteMessage,
 } from "@/utils/telegram";
@@ -84,8 +86,13 @@ export default async function handler(req, res) {
 					break;
 
 				case "reset_sum":
-					// Просто обновляем главное меню (суммы обнуляются при проверке даты)
-					await showMainInterface(chatId, messageId);
+					// Полный сброс данных
+					await resetData(chatId, messageId);
+					break;
+
+				case "reset_last":
+					// Сброс только последнего ввода
+					await resetLastInput(chatId, messageId);
 					break;
 
 				case "help":
