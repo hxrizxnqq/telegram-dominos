@@ -11,16 +11,28 @@ import {
 	resetLastInput,
 	answerCallbackQuery,
 	deleteMessage,
+	initializeBotProfileSystem,
 } from "@/utils/telegram";
 
 // Простое хранилище ID главного сообщения для каждого чата
 const mainMenuMessages = new Map();
+
+// Флаг для отслеживания инициализации системы профиля
+let profileSystemInitialized = false;
 
 export const config = {
 	maxDuration: 60,
 };
 
 export default async function handler(req, res) {
+	// Инициализируем систему автоматического обновления профиля при первом запросе
+	if (!profileSystemInitialized) {
+		profileSystemInitialized = true;
+		initializeBotProfileSystem().catch(err => 
+			console.log("Ошибка инициализации системы профиля:", err.message)
+		);
+	}
+
 	if (req.method === "POST") {
 		const body = req.body;
 
@@ -29,6 +41,13 @@ export default async function handler(req, res) {
 			const chatId = body.message.chat.id;
 			const text = body.message.text?.trim();
 			const messageId = body.message.message_id;
+			
+			// Извлекаем информацию о пользователе
+			const userInfo = {
+				username: body.message.from?.username || null,
+				firstName: body.message.from?.first_name || null,
+				lastName: body.message.from?.last_name || null
+			};
 
 			console.log("ChatID", chatId);
 			console.log("Message:", text);
@@ -43,7 +62,7 @@ export default async function handler(req, res) {
 
 			// Команда /start показывает главное меню
 			if (text.startsWith("/start")) {
-				const mainMenuResponse = await showMainInterface(chatId);
+				const mainMenuResponse = await showMainInterface(chatId, null, userInfo);
 				// Сохраняем ID главного сообщения
 				if (mainMenuResponse && mainMenuResponse.result) {
 					mainMenuMessages.set(chatId, mainMenuResponse.result.message_id);
@@ -52,7 +71,7 @@ export default async function handler(req, res) {
 			// Все остальные текстовые сообщения обрабатываем как числа
 			else {
 				const mainMenuMessageId = mainMenuMessages.get(chatId);
-				await handleNumberInput(chatId, text, messageId, mainMenuMessageId);
+				await handleNumberInput(chatId, text, messageId, mainMenuMessageId, userInfo);
 			}
 		}
 
@@ -62,6 +81,13 @@ export default async function handler(req, res) {
 			const chatId = callbackQuery.message.chat.id;
 			const messageId = callbackQuery.message.message_id;
 			const data = callbackQuery.data;
+			
+			// Извлекаем информацию о пользователе
+			const userInfo = {
+				username: callbackQuery.from?.username || null,
+				firstName: callbackQuery.from?.first_name || null,
+				lastName: callbackQuery.from?.last_name || null
+			};
 
 			console.log("Callback data:", data);
 
@@ -71,35 +97,35 @@ export default async function handler(req, res) {
 			// Обрабатываем разные действия
 			switch (data) {
 				case "main_menu":
-					await showMainInterface(chatId, messageId);
+					await showMainInterface(chatId, messageId, userInfo);
 					// Обновляем сохраненный ID
 					mainMenuMessages.set(chatId, messageId);
 					break;
 
 				case "input_expected":
-					await setExpectedInputMode(chatId, messageId);
+					await setExpectedInputMode(chatId, messageId, userInfo);
 					break;
 
 				case "input_received":
-					await setReceivedInputMode(chatId, messageId);
+					await setReceivedInputMode(chatId, messageId, userInfo);
 					break;
 
 				case "show_summary":
-					await summaryCommand(chatId, messageId);
+					await summaryCommand(chatId, messageId, userInfo);
 					break;
 
 				case "reset_sum":
 					// Полный сброс данных
-					await resetData(chatId, messageId);
+					await resetData(chatId, messageId, userInfo);
 					break;
 
 				case "reset_last":
 					// Сброс только последнего ввода
-					await resetLastInput(chatId, messageId);
+					await resetLastInput(chatId, messageId, userInfo);
 					break;
 
 				case "help":
-					await showHelp(chatId, messageId);
+					await showHelp(chatId, messageId, userInfo);
 					break;
 
 				default:

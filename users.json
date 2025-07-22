@@ -1,0 +1,11 @@
+[
+  {
+    "chatId": 123456789,
+    "firstSeen": "2025-07-22T23:16:58.000Z",
+    "lastSeen": "2025-07-22T23:17:32.000Z",
+    "totalInteractions": 3,
+    "username": "testuser",
+    "firstName": "Test",
+    "lastName": "User"
+  }
+]

@@ -1,6 +1,88 @@
 // msg, chatd
 const TELEGRAM_API_URL = `https://api.telegram.org/bot${process.env.BOT_TOKEN}`;
 
+// Модуль для работы с файловой системой
+import fs from 'fs';
+import path from 'path';
+
+// Путь к файлу с данными пользователей
+const USERS_FILE_PATH = path.join(process.cwd(), 'users.json');
+
+// Функция для загрузки пользователей из файла
+function loadUsers() {
+	try {
+		if (fs.existsSync(USERS_FILE_PATH)) {
+			const data = fs.readFileSync(USERS_FILE_PATH, 'utf8');
+			return JSON.parse(data);
+		}
+	} catch (error) {
+		console.error('Ошибка загрузки пользователей:', error.message);
+	}
+	return [];
+}
+
+// Функция для сохранения пользователей в файл
+function saveUsers(users) {
+	try {
+		fs.writeFileSync(USERS_FILE_PATH, JSON.stringify(users, null, 2), 'utf8');
+	} catch (error) {
+		console.error('Ошибка сохранения пользователей:', error.message);
+	}
+}
+
+// Функция для добавления или обновления пользователя
+function trackUser(chatId, userInfo = {}) {
+	const users = loadUsers();
+	const polandTime = getPolandTime();
+	
+	// Ищем существующего пользователя
+	const existingUserIndex = users.findIndex(user => user.chatId === chatId);
+	
+	if (existingUserIndex !== -1) {
+		// Обновляем существующего пользователя
+		users[existingUserIndex].lastSeen = polandTime.toISOString();
+		users[existingUserIndex].totalInteractions = (users[existingUserIndex].totalInteractions || 0) + 1;
+		
+		// Обновляем дополнительную информацию, если она есть
+		if (userInfo.username) users[existingUserIndex].username = userInfo.username;
+		if (userInfo.firstName) users[existingUserIndex].firstName = userInfo.firstName;
+		if (userInfo.lastName) users[existingUserIndex].lastName = userInfo.lastName;
+	} else {
+		// Добавляем нового пользователя
+		const newUser = {
+			chatId: chatId,
+			firstSeen: polandTime.toISOString(),
+			lastSeen: polandTime.toISOString(),
+			totalInteractions: 1,
+			username: userInfo.username || null,
+			firstName: userInfo.firstName || null,
+			lastName: userInfo.lastName || null
+		};
+		users.push(newUser);
+	}
+	
+	saveUsers(users);
+}
+
+// Функция для получения статистики пользователей
+function getUserStats() {
+	const users = loadUsers();
+	const now = getPolandTime();
+	const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+	const oneWeekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+	
+	const activeToday = users.filter(user => new Date(user.lastSeen) > oneDayAgo).length;
+	const activeThisWeek = users.filter(user => new Date(user.lastSeen) > oneWeekAgo).length;
+	const totalInteractions = users.reduce((sum, user) => sum + (user.totalInteractions || 0), 0);
+	
+	return {
+		totalUsers: users.length,
+		activeToday,
+		activeThisWeek,
+		totalInteractions
+	};
+}
+
 // Получение текущего времени в польском часовом поясе
 function getPolandTime() {
 	const now = new Date();
@@ -36,7 +118,7 @@ function scheduleDelete(chatId, messageId, delayMs) {
 }
 
 // Обновление статистики бота
-function updateBotStats(chatId) {
+function updateBotStats(chatId, userInfo = {}) {
 	const now = getPolandTime();
 	
 	// Обновляем общую статистику
@@ -50,6 +132,12 @@ function updateBotStats(chatId) {
 	// Очищаем сообщения старше часа
 	const oneHourAgo = now.getTime() - (60 * 60 * 1000);
 	botStats.messagesLastHour = botStats.messagesLastHour.filter(timestamp => timestamp > oneHourAgo);
+	
+	// Отслеживаем пользователя в файле
+	trackUser(chatId, userInfo);
+	
+	// Планируем обновление описания бота
+	scheduleDescriptionUpdate();
 }
 
 // Получение текущего статуса бота
@@ -291,9 +379,9 @@ function createMainMenu() {
 }
 
 // Главное сообщение с текущими суммами
-export async function showMainInterface(chatId, messageId = null) {
+export async function showMainInterface(chatId, messageId = null, userInfo = {}) {
 	checkDateAndReset();
-	updateBotStats(chatId); // Обновляем статистику
+	updateBotStats(chatId, userInfo); // Обновляем статистику
 
 	const date = getReadableDate();
 	const difference = receivedSum - expectedSum;
@@ -335,9 +423,9 @@ export async function showMainInterface(chatId, messageId = null) {
 }
 
 // Обработка команды /итог с красивым форматированием
-export async function summaryCommand(chatId, messageId = null) {
+export async function summaryCommand(chatId, messageId = null, userInfo = {}) {
 	checkDateAndReset();
-	updateBotStats(chatId); // Обновляем статистику
+	updateBotStats(chatId, userInfo); // Обновляем статистику
 
 	const date = getReadableDate();
 	const difference = receivedSum - expectedSum;
@@ -407,10 +495,11 @@ export async function handleNumberInput(
 	chatId,
 	text,
 	userMessageId,
-	mainMenuMessageId = null
+	mainMenuMessageId = null,
+	userInfo = {}
 ) {
 	checkDateAndReset();
-	updateBotStats(chatId); // Обновляем статистику
+	updateBotStats(chatId, userInfo); // Обновляем статистику
 
 	// Удаляем сообщение пользователя для чистоты чата
 	await deleteMessage(chatId, userMessageId);
@@ -468,8 +557,8 @@ export async function handleNumberInput(
 }
 
 // Показать справку
-export async function showHelp(chatId, messageId = null) {
-	updateBotStats(chatId); // Обновляем статистику
+export async function showHelp(chatId, messageId = null, userInfo = {}) {
+	updateBotStats(chatId, userInfo); // Обновляем статистику
 	
 	const { timeStatus, loadStatus } = getBotStatus();
 	const uptime = getBotUptime();
@@ -533,8 +622,8 @@ export async function pinMessage(chatid, messageId) {
 }
 
 // Установка режима ввода ожидаемой суммы
-export async function setExpectedInputMode(chatId, messageId = null) {
-	updateBotStats(chatId); // Обновляем статистику
+export async function setExpectedInputMode(chatId, messageId = null, userInfo = {}) {
+	updateBotStats(chatId, userInfo); // Обновляем статистику
 	userStates.set(chatId, { mode: "waiting_expected" });
 
 	const text = `🎯 <b>Ввод ожидаемой суммы</b>
@@ -557,8 +646,8 @@ export async function setExpectedInputMode(chatId, messageId = null) {
 }
 
 // Установка режима ввода полученной суммы
-export async function setReceivedInputMode(chatId, messageId = null) {
-	updateBotStats(chatId); // Обновляем статистику
+export async function setReceivedInputMode(chatId, messageId = null, userInfo = {}) {
+	updateBotStats(chatId, userInfo); // Обновляем статистику
 	userStates.set(chatId, { mode: "waiting_received" });
 
 	const text = `💸 <b>Ввод полученной суммы</b>
@@ -581,8 +670,8 @@ export async function setReceivedInputMode(chatId, messageId = null) {
 }
 
 // Сброс всех данных
-export async function resetData(chatId, messageId = null) {
-	updateBotStats(chatId); // Обновляем статистику
+export async function resetData(chatId, messageId = null, userInfo = {}) {
+	updateBotStats(chatId, userInfo); // Обновляем статистику
 	
 	expectedSum = 0;
 	receivedSum = 0;
@@ -602,8 +691,8 @@ export async function resetData(chatId, messageId = null) {
 }
 
 // Сброс последнего ввода
-export async function resetLastInput(chatId, messageId = null) {
-	updateBotStats(chatId); // Обновляем статистику
+export async function resetLastInput(chatId, messageId = null, userInfo = {}) {
+	updateBotStats(chatId, userInfo); // Обновляем статистику
 	
 	if (!lastInput) {
 		// Если нет последнего ввода
@@ -637,3 +726,269 @@ export async function resetLastInput(chatId, messageId = null) {
 		await showMainInterface(chatId, messageId);
 	}
 }
+
+// Функция для обновления имени бота
+async function updateBotName() {
+	const { timeStatus, loadStatus } = getBotStatus();
+	const now = getPolandTime();
+	const hour = now.getHours().toString().padStart(2, '0');
+	const minute = now.getMinutes().toString().padStart(2, '0');
+	
+	// Создаем динамическое имя
+	let botName = "🍕 Domino's Calc";
+	
+	// Добавляем эмодзи времени
+	if (hour >= 6 && hour < 12) {
+		botName = "🌅 Domino's Calc";
+	} else if (hour >= 12 && hour < 18) {
+		botName = "☀️ Domino's Calc";
+	} else if (hour >= 18 && hour < 22) {
+		botName = "🌆 Domino's Calc";
+	} else {
+		botName = "🌙 Domino's Calc";
+	}
+	
+	// Добавляем индикатор нагрузки
+	const messagesThisHour = botStats.messagesLastHour.length;
+	if (messagesThisHour > 15) {
+		botName += " 🔥"; // Высокая активность
+	} else if (messagesThisHour > 5) {
+		botName += " ⚡"; // Средняя активность
+	} else if (messagesThisHour > 0) {
+		botName += " 💚"; // Низкая активность
+	}
+	
+	try {
+		const response = await fetch(`${TELEGRAM_API_URL}/setMyName`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({
+				name: botName
+			}),
+		});
+		
+		if (response.ok) {
+			console.log(`✅ Имя бота обновлено: ${botName}`);
+		}
+	} catch (err) {
+		console.log("Ошибка обновления имени бота:", err);
+	}
+}
+
+// Расширенная функция обновления имени с учетом польских праздников и событий
+async function updateAdvancedBotName() {
+	const now = getPolandTime();
+	const hour = now.getHours();
+	const date = now.getDate();
+	const month = now.getMonth() + 1; // getMonth() возвращает 0-11
+	const dayOfWeek = now.getDay(); // 0 = воскресенье, 1 = понедельник, и т.д.
+	
+	let botName = "🍕 Domino's";
+	let statusEmoji = "";
+	
+	// Специальные даты (польские праздники)
+	if (month === 12 && date >= 24 && date <= 26) {
+		botName = "🎄 Domino's Calc"; // Рождество
+	} else if (month === 1 && date === 1) {
+		botName = "🎊 Domino's Calc"; // Новый год
+	} else if (month === 5 && date === 3) {
+		botName = "🇵🇱 Domino's Calc"; // День Конституции Польши
+	} else if (month === 5 && date === 1) {
+		botName = "💼 Domino's Calc"; // День труда
+	} else {
+		// Обычные дни - добавляем эмодзи времени
+		if (hour >= 6 && hour < 12) {
+			statusEmoji = "🌅"; // Утро
+		} else if (hour >= 12 && hour < 18) {
+			statusEmoji = "☀️"; // День
+		} else if (hour >= 18 && hour < 22) {
+			statusEmoji = "🌆"; // Вечер
+		} else {
+			statusEmoji = "🌙"; // Ночь
+		}
+		
+		// Дни недели
+		if (dayOfWeek === 0) { // Воскресенье
+			botName = `${statusEmoji} Domino's 😴`;
+		} else if (dayOfWeek === 6) { // Суббота
+			botName = `${statusEmoji} Domino's 🎉`;
+		} else if (dayOfWeek === 1) { // Понедельник
+			botName = `${statusEmoji} Domino's 💪`;
+		} else if (dayOfWeek === 5) { // Пятница
+			botName = `${statusEmoji} Domino's 🎊`;
+		} else {
+			botName = `${statusEmoji} Domino's Calc`;
+		}
+	}
+	
+	// Добавляем индикатор активности
+	const messagesThisHour = botStats.messagesLastHour.length;
+	if (messagesThisHour >= 30) {
+		botName += " 🔥"; // Очень высокая активность
+	} else if (messagesThisHour >= 15) {
+		botName += " ⚡"; // Высокая активность
+	} else if (messagesThisHour >= 5) {
+		botName += " 💚"; // Средняя активность
+	} else if (messagesThisHour > 0) {
+		botName += " 🟢"; // Низкая активность
+	}
+	
+	try {
+		const response = await fetch(`${TELEGRAM_API_URL}/setMyName`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({
+				name: botName
+			}),
+		});
+		
+		if (response.ok) {
+			console.log(`✅ Имя бота обновлено: ${botName}`);
+		} else {
+			const errorText = await response.text();
+			console.log(`❌ Ошибка обновления имени: ${errorText}`);
+		}
+	} catch (err) {
+		console.log("❌ Ошибка обновления имени бота:", err);
+	}
+}
+
+// Функция для обновления описания бота
+async function updateBotDescription() {
+	try {
+		const { timeStatus, loadStatus, messagesThisHour } = getBotStatus();
+		const uptime = getBotUptime();
+		const totalUsers = botStats.totalUsers.size;
+		const userStats = getUserStats();
+		
+		// Краткое описание с нагрузкой и статистикой
+		const description = `${timeStatus} • ${loadStatus}
+📊 ${messagesThisHour} сообщений/час • ⏱️ ${uptime}
+👥 ${userStats.totalUsers} всего • ${userStats.activeToday} активных сегодня
+🇵🇱 Польское время • 💬 ${userStats.totalInteractions} взаимодействий
+Калькулятор чаевых для Dominos с автосбросом в 11:00`;
+
+		const url = `${TELEGRAM_API_URL}/setMyDescription`;
+		const response = await fetch(url, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({
+				description: description
+			}),
+		});
+
+		if (response.ok) {
+			console.log("✅ Описание бота обновлено:", description.split('\n')[0]);
+		} else {
+			const errorText = await response.text();
+			console.log("❌ Ошибка обновления описания бота:", errorText);
+		}
+	} catch (err) {
+		console.log("❌ Ошибка при обновлении описания бота:", err.message);
+	}
+}
+
+// Переменная для отслеживания последнего обновления описания
+let lastDescriptionUpdate = 0;
+let descriptionUpdateTimer = null;
+
+// Запуск автоматического обновления описания каждые 5 минут
+function startDescriptionUpdateTimer() {
+	// Останавливаем предыдущий таймер, если он был
+	if (descriptionUpdateTimer) {
+		clearInterval(descriptionUpdateTimer);
+	}
+	
+	// Запускаем новый таймер на 5 минут
+	descriptionUpdateTimer = setInterval(async () => {
+		try {
+			console.log("🔄 Автоматическое обновление описания бота...");
+			await updateBotDescription();
+			lastDescriptionUpdate = Date.now();
+		} catch (err) {
+			console.log("❌ Ошибка автоматического обновления описания:", err.message);
+		}
+	}, 5 * 60 * 1000); // 5 минут
+	
+	console.log("✅ Автоматическое обновление описания запущено (каждые 5 минут)");
+}
+
+// Остановка автоматического обновления описания
+function stopDescriptionUpdateTimer() {
+	if (descriptionUpdateTimer) {
+		clearInterval(descriptionUpdateTimer);
+		descriptionUpdateTimer = null;
+		console.log("⏹️ Автоматическое обновление описания остановлено");
+	}
+}
+
+// Планирование обновления описания бота (для немедленных обновлений при активности)
+function scheduleDescriptionUpdate() {
+	const now = Date.now();
+	
+	// Немедленное обновление только если прошло более 5 минут с последнего
+	if (now - lastDescriptionUpdate > 5 * 60 * 1000) {
+		lastDescriptionUpdate = now;
+		
+		// Обновляем с небольшой задержкой, чтобы не перегружать API
+		setTimeout(async () => {
+			try {
+				await updateBotDescription();
+			} catch (err) {
+				console.log("❌ Ошибка обновления описания:", err.message);
+			}
+		}, 2000);
+	}
+}
+
+// Принудительное обновление описания бота (например, при запуске)
+export async function forceUpdateBotDescription() {
+	lastDescriptionUpdate = 0; // Сбрасываем ограничение времени
+	try {
+		await updateBotDescription();
+		lastDescriptionUpdate = Date.now();
+	} catch (err) {
+		console.log("❌ Ошибка принудительного обновления описания:", err.message);
+	}
+}
+
+// Инициализация системы автоматического обновления профиля
+export async function initializeBotProfileSystem() {
+	console.log("🤖 Инициализация системы обновления профиля бота...");
+	
+	// Немедленное обновление при запуске
+	await forceUpdateBotDescription();
+	
+	// Запуск автоматического обновления каждые 5 минут
+	startDescriptionUpdateTimer();
+	
+	console.log("✅ Система автоматического обновления профиля инициализирована");
+}
+
+// Остановка системы автоматического обновления профиля
+export async function stopBotProfileSystem() {
+	stopDescriptionUpdateTimer();
+	console.log("🛑 Система автоматического обновления профиля остановлена");
+}
+
+// Экспорт функций для работы с пользователями
+export { loadUsers, saveUsers, trackUser, getUserStats };
+
+// Обработка завершения процесса для корректной остановки таймеров
+process.on('SIGINT', async () => {
+	console.log("\n🔄 Завершение работы бота...");
+	await stopBotProfileSystem();
+	process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+	console.log("\n🔄 Завершение работы бота...");
+	await stopBotProfileSystem();
+	process.exit(0);
+});
