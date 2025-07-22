@@ -24,35 +24,74 @@ function checkDateAndReset() {
 	}
 }
 
-export async function sendMessage(chatid, text) {
+// Функция для отправки сообщения с inline клавиатурой
+export async function sendMessage(chatid, text, replyMarkup = null) {
 	const url = `${TELEGRAM_API_URL}/sendMessage`;
 	try {
-		const respose = await fetch(url, {
+		const body = {
+			chat_id: chatid,
+			text: text,
+			parse_mode: "HTML",
+		};
+
+		if (replyMarkup) {
+			body.reply_markup = replyMarkup;
+		}
+
+		const response = await fetch(url, {
 			method: "POST",
 			headers: {
 				"Content-type": "application/json",
 			},
-			body: JSON.stringify({
-				chat_id: chatid,
-				text: text,
-			}),
+			body: JSON.stringify(body),
 		});
-		if (!respose.ok) {
+
+		if (!response.ok) {
 			console.log(
 				"Failed to send message to telegram user",
-				await respose.text()
+				await response.text()
 			);
 		}
-		return await respose.json();
+		return await response.json();
 	} catch (err) {
-		console.log("Error occured while sending message to telegram user", err);
+		console.log("Error occurred while sending message to telegram user", err);
 		return null;
 	}
 }
 
-// Функция для закрепления сообщения
-export async function pinMessage(chatid, messageId) {
-	const url = `${TELEGRAM_API_URL}/pinChatMessage`;
+// Функция для редактирования сообщения
+export async function editMessage(chatid, messageId, text, replyMarkup = null) {
+	const url = `${TELEGRAM_API_URL}/editMessageText`;
+	try {
+		const body = {
+			chat_id: chatid,
+			message_id: messageId,
+			text: text,
+			parse_mode: "HTML",
+		};
+
+		if (replyMarkup) {
+			body.reply_markup = replyMarkup;
+		}
+
+		const response = await fetch(url, {
+			method: "POST",
+			headers: {
+				"Content-type": "application/json",
+			},
+			body: JSON.stringify(body),
+		});
+
+		return await response.json();
+	} catch (err) {
+		console.log("Error occurred while editing message", err);
+		return null;
+	}
+}
+
+// Функция для удаления сообщения
+export async function deleteMessage(chatid, messageId) {
+	const url = `${TELEGRAM_API_URL}/deleteMessage`;
 	try {
 		const response = await fetch(url, {
 			method: "POST",
@@ -64,59 +103,162 @@ export async function pinMessage(chatid, messageId) {
 				message_id: messageId,
 			}),
 		});
-		if (!response.ok) {
-			console.log("Failed to pin message", await response.text());
-			return false;
-		}
-		return true;
+
+		return response.ok;
 	} catch (err) {
-		console.log("Error occurred while pinning message", err);
+		console.log("Error occurred while deleting message", err);
 		return false;
 	}
 }
 
-// Функция для обработки команды /итог
-export async function summaryCommand(chatId) {
+// Функция для ответа на callback query
+export async function answerCallbackQuery(callbackQueryId, text = "") {
+	const url = `${TELEGRAM_API_URL}/answerCallbackQuery`;
+	try {
+		const response = await fetch(url, {
+			method: "POST",
+			headers: {
+				"Content-type": "application/json",
+			},
+			body: JSON.stringify({
+				callback_query_id: callbackQueryId,
+				text: text,
+			}),
+		});
+
+		return response.ok;
+	} catch (err) {
+		console.log("Error occurred while answering callback query", err);
+		return false;
+	}
+}
+
+// Создание главного меню
+function createMainMenu() {
+	return {
+		inline_keyboard: [
+			[
+				{ text: "📊 Показать итог", callback_data: "show_summary" },
+				{ text: "🔄 Сбросить", callback_data: "reset_sum" },
+			],
+			[{ text: "ℹ️ Справка", callback_data: "help" }],
+		],
+	};
+}
+
+// Главное сообщение с текущей суммой
+export async function showMainInterface(chatId, messageId = null) {
 	checkDateAndReset();
 
 	const date = getReadableDate();
-	const response = `📅 Итог за ${date}:\n🔢 Сумма: ${currentSum}`;
+	const text = `� <b>Калькулятор сумм</b>
+	
+📅 <i>${date}</i>
+� Текущая сумма: <b>${currentSum}</b>
 
-	try {
-		const sentMessage = await sendMessage(chatId, response);
-		if (sentMessage && sentMessage.result) {
-			const pinSuccess = await pinMessage(
-				chatId,
-				sentMessage.result.message_id
-			);
-			if (!pinSuccess) {
-				await sendMessage(
-					chatId,
-					"❗ Не удалось закрепить сообщение (возможно, нет прав)."
-				);
-			}
-		}
-	} catch (err) {
-		console.error("Ошибка при отправке или закреплении:", err);
+<i>Отправьте число для добавления к сумме</i>`;
+
+	const keyboard = createMainMenu();
+
+	if (messageId) {
+		return await editMessage(chatId, messageId, text, keyboard);
+	} else {
+		return await sendMessage(chatId, text, keyboard);
 	}
-
-	currentSum = 0;
-	lastResetDate = getTodayDate();
 }
 
-// Функция для добавления числа к сумме
-export async function addToSum(chatId, text) {
+// Обработка команды /итог с красивым форматированием
+export async function summaryCommand(chatId, messageId = null) {
 	checkDateAndReset();
 
-	// Попробуем распознать число
+	const date = getReadableDate();
+	const text = `📋 <b>Итоговый отчет</b>
+
+📅 Дата: <i>${date}</i>
+💰 Итоговая сумма: <b>${currentSum}</b>
+
+✅ <i>Сумма сброшена до 0</i>`;
+
+	const keyboard = {
+		inline_keyboard: [
+			[{ text: "🔙 Назад в меню", callback_data: "main_menu" }],
+		],
+	};
+
+	// Сбрасываем сумму
+	currentSum = 0;
+	lastResetDate = getTodayDate();
+
+	if (messageId) {
+		return await editMessage(chatId, messageId, text, keyboard);
+	} else {
+		return await sendMessage(chatId, text, keyboard);
+	}
+}
+
+// Обработка добавления числа
+export async function addToSum(chatId, text, userMessageId) {
+	checkDateAndReset();
+
+	// Удаляем сообщение пользователя для чистоты чата
+	await deleteMessage(chatId, userMessageId);
+
 	const number = parseFloat(text.replace(",", "."));
 	if (!isNaN(number)) {
 		currentSum += number;
-		await sendMessage(
-			chatId,
-			`Добавлено: ${number}. Текущая сумма: ${currentSum}`
-		);
+
+		// Отправляем уведомление которое автоматически удалится
+		const notification = await sendMessage(chatId, `✅ +${number}`);
+
+		// Удаляем уведомление через 2 секунды
+		if (notification && notification.result) {
+			setTimeout(async () => {
+				await deleteMessage(chatId, notification.result.message_id);
+			}, 2000);
+		}
+
 		return true;
+	} else {
+		// Отправляем ошибку которая автоматически удалится
+		const errorMsg = await sendMessage(chatId, "❌ Неверный формат числа");
+
+		if (errorMsg && errorMsg.result) {
+			setTimeout(async () => {
+				await deleteMessage(chatId, errorMsg.result.message_id);
+			}, 3000);
+		}
+
+		return false;
 	}
-	return false;
+}
+
+// Показать справку
+export async function showHelp(chatId, messageId = null) {
+	const text = `ℹ️ <b>Справка по боту</b>
+
+🎯 <b>Как пользоваться:</b>
+• Отправляйте числа для добавления к сумме
+• Используйте кнопки для управления
+• Сумма автоматически сбрасывается каждый день
+
+🔧 <b>Команды:</b>
+• <code>/start</code> - Главное меню
+• Числа (100, 50.5, 25,75) - Добавление к сумме
+
+💡 <b>Особенности:</b>
+• Минималистичный интерфейс
+• Автоудаление сообщений
+• Компактное отображение`;
+
+	const keyboard = {
+		inline_keyboard: [
+			[{ text: "🔙 Назад в меню", callback_data: "main_menu" }],
+		],
+	};
+
+	if (messageId) {
+		return await editMessage(chatId, messageId, text, keyboard);
+	} else {
+		return await sendMessage(chatId, text, keyboard);
+	}
 }
