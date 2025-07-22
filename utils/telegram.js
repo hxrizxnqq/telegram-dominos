@@ -1,10 +1,16 @@
 // msg, chatd
 const TELEGRAM_API_URL = `https://api.telegram.org/bot${process.env.BOT_TOKEN}`;
 
+// Получение текущего времени в польском часовом поясе
+function getPolandTime() {
+	const now = new Date();
+	return new Date(now.toLocaleString("en-US", {timeZone: "Europe/Warsaw"}));
+}
+
 // Переменные для хранения данных
 let expectedSum = 0; // Сумма, которую должны получить
 let receivedSum = 0; // Сумма, которую получили
-let lastResetDate = getTodayDate();
+let lastResetDate = getPolandTime().toISOString(); // Время последнего сброса в польском часовом поясе
 let lastInput = null; // 'expected' или 'received' - что было введено последним
 
 // Состояние пользователя для каждого чата
@@ -20,24 +26,61 @@ function scheduleDelete(chatId, messageId, delayMs) {
 	}, delayMs);
 }
 
-// Получение текущей даты в формате YYYY-MM-DD
+// Получение текущей даты в польском часовом поясе в формате YYYY-MM-DD
 function getTodayDate() {
-	return new Date().toISOString().slice(0, 10);
+	const now = new Date();
+	const polandTime = new Date(now.toLocaleString("en-US", {timeZone: "Europe/Warsaw"}));
+	return polandTime.toISOString().slice(0, 10);
 }
 
-// Получение читаемой даты
+// Получение текущего времени сброса (дата + время 11:00) в польском часовом поясе
+function getResetTime() {
+	const now = getPolandTime();
+	const resetTime = new Date(now);
+	resetTime.setHours(11, 0, 0, 0); // Устанавливаем 11:00:00 по польскому времени
+	
+	// Если сейчас время до 11:00, то берем сегодняшний сброс
+	// Если после 11:00, то следующий сброс будет завтра в 11:00
+	if (now.getHours() < 11) {
+		// До 11:00 - берем сегодняшний сброс
+		return resetTime.toISOString();
+	} else {
+		// После 11:00 - берем завтрашний сброс
+		resetTime.setDate(resetTime.getDate() + 1);
+		return resetTime.toISOString();
+	}
+}
+
+// Проверка, нужен ли сброс (прошло ли время сброса в 11:00) по польскому времени
+function shouldReset() {
+	const now = getPolandTime();
+	const lastReset = new Date(lastResetDate);
+	
+	// Создаем время сброса для сегодня (11:00) в польском часовом поясе
+	const todayReset = new Date(now);
+	todayReset.setHours(11, 0, 0, 0);
+	
+	// Если сейчас после 11:00 и последний сброс был до сегодняшних 11:00
+	if (now >= todayReset && lastReset < todayReset) {
+		return true;
+	}
+	
+	return false;
+}
+
+// Получение читаемой даты в польском часовом поясе
 function getReadableDate() {
-	return new Date().toLocaleDateString("ru-RU");
+	const polandTime = getPolandTime();
+	return polandTime.toLocaleDateString("pl-PL");
 }
 
-// Проверка смены дня
+// Проверка и выполнение сброса в 11:00 по польскому времени
 function checkDateAndReset() {
-	const today = getTodayDate();
-	if (today !== lastResetDate) {
+	if (shouldReset()) {
 		expectedSum = 0;
 		receivedSum = 0;
 		lastInput = null;
-		lastResetDate = today;
+		lastResetDate = getPolandTime().toISOString(); // Обновляем время последнего сброса в польском часовом поясе
 		// Очищаем состояния пользователей
 		userStates.clear();
 	}
@@ -66,10 +109,12 @@ export async function sendMessage(chatid, text, replyMarkup = null) {
 		});
 
 		if (!response.ok) {
+			const errorText = await response.text();
 			console.log(
 				"Failed to send message to telegram user",
-				await response.text()
+				errorText
 			);
+			return null;
 		}
 		return await response.json();
 	} catch (err) {
@@ -156,18 +201,12 @@ export async function answerCallbackQuery(callbackQueryId, text = "") {
 function createMainMenu() {
 	return {
 		inline_keyboard: [
-			[
-				{ text: "1️⃣ Ввести ожидаемую сумму", callback_data: "input_expected" },
-			],
-			[
-				{ text: "2️⃣ Ввести полученную сумму", callback_data: "input_received" },
-			],
-			[
-				{ text: "📊 Показать итог", callback_data: "show_summary" },
-			],
+			[{ text: "1️⃣ Ввести ожидаемую сумму", callback_data: "input_expected" }],
+			[{ text: "2️⃣ Ввести полученную сумму", callback_data: "input_received" }],
+			[{ text: "📊 Показать итог", callback_data: "show_summary" }],
 			[
 				{ text: "🔄 Сбросить всё", callback_data: "reset_sum" },
-				{ text: "↩️ Сбросить последний", callback_data: "reset_last" },
+				{ text: "↩️ Сбросить последнее", callback_data: "reset_last" },
 			],
 			[{ text: "ℹ️ Справка", callback_data: "help" }],
 		],
@@ -180,16 +219,27 @@ export async function showMainInterface(chatId, messageId = null) {
 
 	const date = getReadableDate();
 	const difference = receivedSum - expectedSum;
-	const differenceText = difference === 0 ? "0" : 
-		difference > 0 ? `+${difference}` : `${difference}`;
-	
-	const text = `💰 <b>Калькулятор разности</b>
+	const differenceText =
+		difference === 0
+			? "0"
+			: difference > 0
+			? `+${difference}`
+			: `${difference}`;
+
+	// Информация о следующем сбросе
+	const now = getPolandTime();
+	const nextResetInfo = now.getHours() < 11 
+		? "сегодня в 11:00" 
+		: "завтра в 11:00";
+
+	const text = `💰 <b>Калькулятор чая для Dominos</b>
 	
 📅 <i>${date}</i>
 🎯 Ожидаемая сумма: <b>${expectedSum}</b>
 💸 Полученная сумма: <b>${receivedSum}</b>
-📊 Разность: <b>${differenceText}</b>
+📊 Твой напивек: <b>${differenceText}</b>
 
+🕐 <i>Автосброс ${nextResetInfo} (польское время)</i>
 <i>Используйте кнопки для ввода сумм</i>`;
 
 	const keyboard = createMainMenu();
@@ -207,13 +257,17 @@ export async function summaryCommand(chatId, messageId = null) {
 
 	const date = getReadableDate();
 	const difference = receivedSum - expectedSum;
-	const differenceText = difference === 0 ? "0" : 
-		difference > 0 ? `+${difference}` : `${difference}`;
-	
+	const differenceText =
+		difference === 0
+			? "0"
+			: difference > 0
+			? `+${difference}`
+			: `${difference}`;
+
 	// Определяем статус
 	let statusEmoji = "📊";
 	let statusText = "Итоговый отчет";
-	
+
 	if (difference > 0) {
 		statusEmoji = "💰";
 		statusText = "Профит!";
@@ -227,7 +281,7 @@ export async function summaryCommand(chatId, messageId = null) {
 
 📅 Дата: <i>${date}</i>
 🎯 Ожидалось: <b>${expectedSum}</b>
-� Получено: <b>${receivedSum}</b>
+🏧 Получено: <b>${receivedSum}</b>
 📊 Разность: <b>${differenceText}</b>
 
 ✅ <i>Данные сброшены</i>`;
@@ -246,7 +300,7 @@ export async function summaryCommand(chatId, messageId = null) {
 	// Сбрасываем суммы
 	expectedSum = 0;
 	receivedSum = 0;
-	lastResetDate = getTodayDate();
+	lastResetDate = new Date().toISOString();
 	userStates.clear();
 
 	// Обновляем главное меню (показываем обнуленные суммы)
@@ -279,10 +333,13 @@ export async function handleNumberInput(
 	}
 
 	const userState = userStates.get(chatId);
-	
+
 	if (!userState || !userState.mode) {
 		// Если режим не установлен, показываем помощь
-		const helpMsg = await sendMessage(chatId, "💡 Сначала выберите режим ввода через кнопки!");
+		const helpMsg = await sendMessage(
+			chatId,
+			"💡 Сначала выберите режим ввода через кнопки!"
+		);
 		if (helpMsg && helpMsg.result) {
 			scheduleDelete(chatId, helpMsg.result.message_id, 3000);
 		}
@@ -290,15 +347,15 @@ export async function handleNumberInput(
 	}
 
 	let notification = "";
-	
-	if (userState.mode === 'waiting_expected') {
+
+	if (userState.mode === "waiting_expected") {
 		expectedSum = number;
-		lastInput = 'expected';
+		lastInput = "expected";
 		notification = `🎯 Ожидаемая сумма: ${number}`;
 		userStates.delete(chatId); // Очищаем режим
-	} else if (userState.mode === 'waiting_received') {
+	} else if (userState.mode === "waiting_received") {
 		receivedSum = number;
-		lastInput = 'received';
+		lastInput = "received";
 		notification = `💸 Полученная сумма: ${number}`;
 		userStates.delete(chatId); // Очищаем режим
 	}
@@ -374,8 +431,8 @@ export async function pinMessage(chatid, messageId) {
 
 // Установка режима ввода ожидаемой суммы
 export async function setExpectedInputMode(chatId, messageId = null) {
-	userStates.set(chatId, { mode: 'waiting_expected' });
-	
+	userStates.set(chatId, { mode: "waiting_expected" });
+
 	const text = `🎯 <b>Ввод ожидаемой суммы</b>
 
 💡 Отправьте число - сумму, которую вы должны получить
@@ -397,8 +454,8 @@ export async function setExpectedInputMode(chatId, messageId = null) {
 
 // Установка режима ввода полученной суммы
 export async function setReceivedInputMode(chatId, messageId = null) {
-	userStates.set(chatId, { mode: 'waiting_received' });
-	
+	userStates.set(chatId, { mode: "waiting_received" });
+
 	const text = `💸 <b>Ввод полученной суммы</b>
 
 💡 Отправьте число - сумму, которую вы получили
@@ -424,13 +481,13 @@ export async function resetData(chatId, messageId = null) {
 	receivedSum = 0;
 	lastInput = null;
 	userStates.delete(chatId); // Очищаем состояние пользователя
-	
+
 	// Отправляем уведомление о сбросе
 	const notification = await sendMessage(chatId, "🔄 Все данные сброшены");
 	if (notification && notification.result) {
 		scheduleDelete(chatId, notification.result.message_id, 1500);
 	}
-	
+
 	// Обновляем главное меню
 	if (messageId) {
 		await showMainInterface(chatId, messageId);
@@ -447,25 +504,25 @@ export async function resetLastInput(chatId, messageId = null) {
 		}
 		return;
 	}
-	
+
 	let resetText = "";
-	if (lastInput === 'expected') {
+	if (lastInput === "expected") {
 		expectedSum = 0;
 		resetText = "↩️ Ожидаемая сумма сброшена";
-	} else if (lastInput === 'received') {
+	} else if (lastInput === "received") {
 		receivedSum = 0;
 		resetText = "↩️ Полученная сумма сброшена";
 	}
-	
+
 	lastInput = null; // Очищаем информацию о последнем вводе
 	userStates.delete(chatId); // Очищаем состояние пользователя
-	
+
 	// Отправляем уведомление о сбросе
 	const notification = await sendMessage(chatId, resetText);
 	if (notification && notification.result) {
 		scheduleDelete(chatId, notification.result.message_id, 1500);
 	}
-	
+
 	// Обновляем главное меню
 	if (messageId) {
 		await showMainInterface(chatId, messageId);

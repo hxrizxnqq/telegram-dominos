@@ -38,6 +38,9 @@ export default async function handler(req, res) {
 				return;
 			}
 
+			// Удаляем сообщение пользователя сразу после получения
+			await deleteMessage(chatId, messageId);
+
 			// Команда /start показывает главное меню
 			if (text.startsWith("/start")) {
 				const mainMenuResponse = await showMainInterface(chatId);
