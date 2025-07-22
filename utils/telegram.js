@@ -172,32 +172,46 @@ export async function summaryCommand(chatId, messageId = null) {
 	checkDateAndReset();
 
 	const date = getReadableDate();
-	const text = `📋 <b>Итоговый отчет</b>
+	const finalSum = currentSum; // Сохраняем текущую сумму
+
+	// Создаем отдельное сообщение с итогом
+	const summaryText = `📋 <b>Итоговый отчет</b>
 
 📅 Дата: <i>${date}</i>
-💰 Итоговая сумма: <b>${currentSum}</b>
+💰 Итоговая сумма: <b>${finalSum}</b>
 
 ✅ <i>Сумма сброшена до 0</i>`;
 
-	const keyboard = {
-		inline_keyboard: [
-			[{ text: "🔙 Назад в меню", callback_data: "main_menu" }],
-		],
-	};
+	// Отправляем отдельное сообщение с итогом
+	const summaryMessage = await sendMessage(chatId, summaryText);
+
+	// Закрепляем сообщение с итогом
+	if (summaryMessage && summaryMessage.result) {
+		await pinMessage(chatId, summaryMessage.result.message_id);
+
+		// Удаляем закрепленное сообщение через 10 секунд
+		setTimeout(async () => {
+			await deleteMessage(chatId, summaryMessage.result.message_id);
+		}, 10000);
+	}
 
 	// Сбрасываем сумму
 	currentSum = 0;
 	lastResetDate = getTodayDate();
 
+	// Обновляем главное меню (показываем обнуленную сумму)
 	if (messageId) {
-		return await editMessage(chatId, messageId, text, keyboard);
-	} else {
-		return await sendMessage(chatId, text, keyboard);
+		await showMainInterface(chatId, messageId);
 	}
 }
 
 // Обработка добавления числа
-export async function addToSum(chatId, text, userMessageId) {
+export async function addToSum(
+	chatId,
+	text,
+	userMessageId,
+	mainMenuMessageId = null
+) {
 	checkDateAndReset();
 
 	// Удаляем сообщение пользователя для чистоты чата
@@ -207,8 +221,13 @@ export async function addToSum(chatId, text, userMessageId) {
 	if (!isNaN(number)) {
 		currentSum += number;
 
+		// Обновляем главное меню с новой суммой
+		if (mainMenuMessageId) {
+			await showMainInterface(chatId, mainMenuMessageId);
+		}
+
 		// Отправляем уведомление которое автоматически удалится
-		const notification = await sendMessage(chatId, `✅ +${number}`);
+		const notification = await sendMessage(chatId, `✅ +${number} zł`);
 
 		// Удаляем уведомление через 2 секунды
 		if (notification && notification.result) {
@@ -260,5 +279,28 @@ export async function showHelp(chatId, messageId = null) {
 		return await editMessage(chatId, messageId, text, keyboard);
 	} else {
 		return await sendMessage(chatId, text, keyboard);
+	}
+}
+
+// Функция для закрепления сообщения
+export async function pinMessage(chatid, messageId) {
+	const url = `${TELEGRAM_API_URL}/pinChatMessage`;
+	try {
+		const response = await fetch(url, {
+			method: "POST",
+			headers: {
+				"Content-type": "application/json",
+			},
+			body: JSON.stringify({
+				chat_id: chatid,
+				message_id: messageId,
+				disable_notification: true,
+			}),
+		});
+
+		return response.ok;
+	} catch (err) {
+		console.log("Error occurred while pinning message", err);
+		return false;
 	}
 }

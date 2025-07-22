@@ -9,6 +9,9 @@ import {
 	deleteMessage,
 } from "@/utils/telegram";
 
+// Простое хранилище ID главного сообщения для каждого чата
+const mainMenuMessages = new Map();
+
 export const config = {
 	maxDuration: 60,
 };
@@ -33,11 +36,16 @@ export default async function handler(req, res) {
 
 			// Команда /start показывает главное меню
 			if (text.startsWith("/start")) {
-				await showMainInterface(chatId);
+				const mainMenuResponse = await showMainInterface(chatId);
+				// Сохраняем ID главного сообщения
+				if (mainMenuResponse && mainMenuResponse.result) {
+					mainMenuMessages.set(chatId, mainMenuResponse.result.message_id);
+				}
 			}
 			// Все остальные текстовые сообщения обрабатываем как числа
 			else {
-				await addToSum(chatId, text, messageId);
+				const mainMenuMessageId = mainMenuMessages.get(chatId);
+				await addToSum(chatId, text, messageId, mainMenuMessageId);
 			}
 		}
 
@@ -57,6 +65,8 @@ export default async function handler(req, res) {
 			switch (data) {
 				case "main_menu":
 					await showMainInterface(chatId, messageId);
+					// Обновляем сохраненный ID
+					mainMenuMessages.set(chatId, messageId);
 					break;
 
 				case "show_summary":
