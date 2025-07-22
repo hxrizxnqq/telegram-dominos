@@ -1,9 +1,13 @@
 // msg, chatd
 const TELEGRAM_API_URL = `https://api.telegram.org/bot${process.env.BOT_TOKEN}`;
 
-// Переменные для хранения суммы и даты
-let currentSum = 0;
+// Переменные для хранения данных
+let expectedSum = 0; // Сумма, которую должны получить
+let receivedSum = 0; // Сумма, которую получили
 let lastResetDate = getTodayDate();
+
+// Состояние пользователя для каждого чата
+const userStates = new Map(); // chatId -> { mode: 'waiting_expected' | 'waiting_received' | null }
 
 // Очередь для отложенного удаления сообщений
 const deleteQueue = [];
@@ -29,8 +33,11 @@ function getReadableDate() {
 function checkDateAndReset() {
 	const today = getTodayDate();
 	if (today !== lastResetDate) {
-		currentSum = 0;
+		expectedSum = 0;
+		receivedSum = 0;
 		lastResetDate = today;
+		// Очищаем состояния пользователей
+		userStates.clear();
 	}
 }
 
@@ -148,6 +155,12 @@ function createMainMenu() {
 	return {
 		inline_keyboard: [
 			[
+				{ text: "1️⃣ Ввести ожидаемую сумму", callback_data: "input_expected" },
+			],
+			[
+				{ text: "2️⃣ Ввести полученную сумму", callback_data: "input_received" },
+			],
+			[
 				{ text: "📊 Показать итог", callback_data: "show_summary" },
 				{ text: "🔄 Сбросить", callback_data: "reset_sum" },
 			],
@@ -156,17 +169,23 @@ function createMainMenu() {
 	};
 }
 
-// Главное сообщение с текущей суммой
+// Главное сообщение с текущими суммами
 export async function showMainInterface(chatId, messageId = null) {
 	checkDateAndReset();
 
 	const date = getReadableDate();
-	const text = `� <b>Калькулятор сумм</b>
+	const difference = receivedSum - expectedSum;
+	const differenceText = difference === 0 ? "0" : 
+		difference > 0 ? `+${difference}` : `${difference}`;
+	
+	const text = `💰 <b>Калькулятор разности</b>
 	
 📅 <i>${date}</i>
-� Текущая сумма: <b>${currentSum}</b>
+🎯 Ожидаемая сумма: <b>${expectedSum}</b>
+💸 Полученная сумма: <b>${receivedSum}</b>
+📊 Разность: <b>${differenceText}</b>
 
-<i>Отправьте число для добавления к сумме</i>`;
+<i>Используйте кнопки для ввода сумм</i>`;
 
 	const keyboard = createMainMenu();
 
@@ -182,15 +201,31 @@ export async function summaryCommand(chatId, messageId = null) {
 	checkDateAndReset();
 
 	const date = getReadableDate();
-	const finalSum = currentSum; // Сохраняем текущую сумму
+	const difference = receivedSum - expectedSum;
+	const differenceText = difference === 0 ? "0" : 
+		difference > 0 ? `+${difference}` : `${difference}`;
+	
+	// Определяем статус
+	let statusEmoji = "📊";
+	let statusText = "Итоговый отчет";
+	
+	if (difference > 0) {
+		statusEmoji = "💰";
+		statusText = "Профит!";
+	} else if (difference < 0) {
+		statusEmoji = "📉";
+		statusText = "Убыток";
+	}
 
 	// Создаем отдельное сообщение с итогом
-	const summaryText = `📋 <b>Итоговый отчет</b>
+	const summaryText = `${statusEmoji} <b>${statusText}</b>
 
 📅 Дата: <i>${date}</i>
-💰 Итоговая сумма: <b>${finalSum}</b>
+🎯 Ожидалось: <b>${expectedSum}</b>
+� Получено: <b>${receivedSum}</b>
+📊 Разность: <b>${differenceText}</b>
 
-✅ <i>Сумма сброшена до 0</i>`;
+✅ <i>Данные сброшены</i>`;
 
 	// Отправляем отдельное сообщение с итогом
 	const summaryMessage = await sendMessage(chatId, summaryText);
@@ -203,18 +238,21 @@ export async function summaryCommand(chatId, messageId = null) {
 		scheduleDelete(chatId, summaryMessage.result.message_id, 8000);
 	}
 
-	// Сбрасываем сумму
-	currentSum = 0;
+	// Сбрасываем суммы
+	expectedSum = 0;
+	receivedSum = 0;
 	lastResetDate = getTodayDate();
+	userStates.clear();
 
-	// Обновляем главное меню (показываем обнуленную сумму)
+	// Обновляем главное меню (показываем обнуленные суммы)
 	if (messageId) {
 		await showMainInterface(chatId, messageId);
 	}
 }
 
 // Обработка добавления числа
-export async function addToSum(
+// Обработка ввода чисел в зависимости от режима
+export async function handleNumberInput(
 	chatId,
 	text,
 	userMessageId,
@@ -226,34 +264,50 @@ export async function addToSum(
 	await deleteMessage(chatId, userMessageId);
 
 	const number = parseFloat(text.replace(",", "."));
-	if (!isNaN(number)) {
-		currentSum += number;
-
-		// Обновляем главное меню с новой суммой
-		if (mainMenuMessageId) {
-			await showMainInterface(chatId, mainMenuMessageId);
-		}
-
-		// Отправляем уведомление которое автоматически удалится
-		const notification = await sendMessage(chatId, `✅ +${number} zł`);
-
-		// Планируем удаление уведомления через 1.5 секунды (неблокирующее)
-		if (notification && notification.result) {
-			scheduleDelete(chatId, notification.result.message_id, 1500);
-		}
-
-		return true;
-	} else {
+	if (isNaN(number)) {
 		// Отправляем ошибку которая автоматически удалится
 		const errorMsg = await sendMessage(chatId, "❌ Неверный формат числа");
-
 		if (errorMsg && errorMsg.result) {
-			// Планируем удаление сообщения об ошибке через 2.5 секунды
 			scheduleDelete(chatId, errorMsg.result.message_id, 2500);
 		}
-
 		return false;
 	}
+
+	const userState = userStates.get(chatId);
+	
+	if (!userState || !userState.mode) {
+		// Если режим не установлен, показываем помощь
+		const helpMsg = await sendMessage(chatId, "💡 Сначала выберите режим ввода через кнопки!");
+		if (helpMsg && helpMsg.result) {
+			scheduleDelete(chatId, helpMsg.result.message_id, 3000);
+		}
+		return false;
+	}
+
+	let notification = "";
+	
+	if (userState.mode === 'waiting_expected') {
+		expectedSum = number;
+		notification = `🎯 Ожидаемая сумма: ${number}`;
+		userStates.delete(chatId); // Очищаем режим
+	} else if (userState.mode === 'waiting_received') {
+		receivedSum = number;
+		notification = `💸 Полученная сумма: ${number}`;
+		userStates.delete(chatId); // Очищаем режим
+	}
+
+	// Обновляем главное меню с новыми суммами
+	if (mainMenuMessageId) {
+		await showMainInterface(chatId, mainMenuMessageId);
+	}
+
+	// Отправляем уведомление
+	const notificationMsg = await sendMessage(chatId, notification);
+	if (notificationMsg && notificationMsg.result) {
+		scheduleDelete(chatId, notificationMsg.result.message_id, 1500);
+	}
+
+	return true;
 }
 
 // Показать справку
@@ -261,18 +315,19 @@ export async function showHelp(chatId, messageId = null) {
 	const text = `ℹ️ <b>Справка по боту</b>
 
 🎯 <b>Как пользоваться:</b>
-• Отправляйте числа для добавления к сумме
-• Используйте кнопки для управления
-• Сумма автоматически сбрасывается каждый день
+• Нажмите "1️⃣" и введите ожидаемую сумму
+• Нажмите "2️⃣" и введите полученную сумму  
+• Посмотрите разность в главном меню
+• Нажмите "📊 Показать итог" для финального отчета
 
 🔧 <b>Команды:</b>
 • <code>/start</code> - Главное меню
-• Числа (100, 50.5, 25,75) - Добавление к сумме
+• Числа (1500, 1400.50) - Ввод сумм
 
 💡 <b>Особенности:</b>
-• Минималистичный интерфейс
-• Автоудаление сообщений
-• Компактное отображение`;
+• Расчет разности между суммами
+• Автоматический сброс каждый день
+• Красивые уведомления о прибыли/убытках`;
 
 	const keyboard = {
 		inline_keyboard: [
@@ -307,5 +362,51 @@ export async function pinMessage(chatid, messageId) {
 	} catch (err) {
 		console.log("Error occurred while pinning message", err);
 		return false;
+	}
+}
+
+// Установка режима ввода ожидаемой суммы
+export async function setExpectedInputMode(chatId, messageId = null) {
+	userStates.set(chatId, { mode: 'waiting_expected' });
+	
+	const text = `🎯 <b>Ввод ожидаемой суммы</b>
+
+💡 Отправьте число - сумму, которую вы должны получить
+
+<i>Пример: 1500 или 1500.50</i>`;
+
+	const keyboard = {
+		inline_keyboard: [
+			[{ text: "🔙 Назад в меню", callback_data: "main_menu" }],
+		],
+	};
+
+	if (messageId) {
+		return await editMessage(chatId, messageId, text, keyboard);
+	} else {
+		return await sendMessage(chatId, text, keyboard);
+	}
+}
+
+// Установка режима ввода полученной суммы
+export async function setReceivedInputMode(chatId, messageId = null) {
+	userStates.set(chatId, { mode: 'waiting_received' });
+	
+	const text = `💸 <b>Ввод полученной суммы</b>
+
+💡 Отправьте число - сумму, которую вы получили
+
+<i>Пример: 1400 или 1400.75</i>`;
+
+	const keyboard = {
+		inline_keyboard: [
+			[{ text: "🔙 Назад в меню", callback_data: "main_menu" }],
+		],
+	};
+
+	if (messageId) {
+		return await editMessage(chatId, messageId, text, keyboard);
+	} else {
+		return await sendMessage(chatId, text, keyboard);
 	}
 }

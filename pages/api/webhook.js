@@ -3,8 +3,10 @@
 import {
 	showMainInterface,
 	summaryCommand,
-	addToSum,
+	handleNumberInput,
 	showHelp,
+	setExpectedInputMode,
+	setReceivedInputMode,
 	answerCallbackQuery,
 	deleteMessage,
 } from "@/utils/telegram";
@@ -45,7 +47,7 @@ export default async function handler(req, res) {
 			// Все остальные текстовые сообщения обрабатываем как числа
 			else {
 				const mainMenuMessageId = mainMenuMessages.get(chatId);
-				await addToSum(chatId, text, messageId, mainMenuMessageId);
+				await handleNumberInput(chatId, text, messageId, mainMenuMessageId);
 			}
 		}
 
@@ -69,12 +71,20 @@ export default async function handler(req, res) {
 					mainMenuMessages.set(chatId, messageId);
 					break;
 
+				case "input_expected":
+					await setExpectedInputMode(chatId, messageId);
+					break;
+
+				case "input_received":
+					await setReceivedInputMode(chatId, messageId);
+					break;
+
 				case "show_summary":
 					await summaryCommand(chatId, messageId);
 					break;
 
 				case "reset_sum":
-					// Просто обновляем главное меню (сумма обнуляется при проверке даты)
+					// Просто обновляем главное меню (суммы обнуляются при проверке даты)
 					await showMainInterface(chatId, messageId);
 					break;
 
