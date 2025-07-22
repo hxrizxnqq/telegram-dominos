@@ -5,6 +5,16 @@ const TELEGRAM_API_URL = `https://api.telegram.org/bot${process.env.BOT_TOKEN}`;
 let currentSum = 0;
 let lastResetDate = getTodayDate();
 
+// Очередь для отложенного удаления сообщений
+const deleteQueue = [];
+
+// Функция для отложенного удаления сообщения
+function scheduleDelete(chatId, messageId, delayMs) {
+	setTimeout(async () => {
+		await deleteMessage(chatId, messageId);
+	}, delayMs);
+}
+
 // Получение текущей даты в формате YYYY-MM-DD
 function getTodayDate() {
 	return new Date().toISOString().slice(0, 10);
@@ -189,10 +199,8 @@ export async function summaryCommand(chatId, messageId = null) {
 	if (summaryMessage && summaryMessage.result) {
 		await pinMessage(chatId, summaryMessage.result.message_id);
 
-		// Удаляем закрепленное сообщение через 10 секунд
-		setTimeout(async () => {
-			await deleteMessage(chatId, summaryMessage.result.message_id);
-		}, 10000);
+		// Планируем удаление закрепленного сообщения через 8 секунд
+		scheduleDelete(chatId, summaryMessage.result.message_id, 8000);
 	}
 
 	// Сбрасываем сумму
@@ -229,11 +237,9 @@ export async function addToSum(
 		// Отправляем уведомление которое автоматически удалится
 		const notification = await sendMessage(chatId, `✅ +${number} zł`);
 
-		// Удаляем уведомление через 2 секунды
+		// Планируем удаление уведомления через 1.5 секунды (неблокирующее)
 		if (notification && notification.result) {
-			setTimeout(async () => {
-				await deleteMessage(chatId, notification.result.message_id);
-			}, 2000);
+			scheduleDelete(chatId, notification.result.message_id, 1500);
 		}
 
 		return true;
@@ -242,9 +248,8 @@ export async function addToSum(
 		const errorMsg = await sendMessage(chatId, "❌ Неверный формат числа");
 
 		if (errorMsg && errorMsg.result) {
-			setTimeout(async () => {
-				await deleteMessage(chatId, errorMsg.result.message_id);
-			}, 3000);
+			// Планируем удаление сообщения об ошибке через 2.5 секунды
+			scheduleDelete(chatId, errorMsg.result.message_id, 2500);
 		}
 
 		return false;
