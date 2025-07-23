@@ -7,24 +7,33 @@ import {
 	showHelp,
 	setExpectedInputMode,
 	setReceivedInputMode,
-	resetData,
-	resetLastInput,
 	answerCallbackQuery,
 	deleteMessage,
 	initializeBotProfileSystem,
 } from "@/utils/telegram";
+
+import { initializeDatabase } from "@/utils/database";
 
 // Простое хранилище ID главного сообщения для каждого чата
 const mainMenuMessages = new Map();
 
 // Флаг для отслеживания инициализации системы профиля
 let profileSystemInitialized = false;
+let databaseInitialized = false;
 
 export const config = {
 	maxDuration: 60,
 };
 
 export default async function handler(req, res) {
+	// Инициализируем базу данных при первом запросе
+	if (!databaseInitialized) {
+		databaseInitialized = true;
+		initializeDatabase().catch(err => 
+			console.log("Ошибка инициализации базы данных:", err.message)
+		);
+	}
+
 	// Инициализируем систему автоматического обновления профиля при первом запросе
 	if (!profileSystemInitialized) {
 		profileSystemInitialized = true;
@@ -112,16 +121,6 @@ export default async function handler(req, res) {
 
 				case "show_summary":
 					await summaryCommand(chatId, messageId, userInfo);
-					break;
-
-				case "reset_sum":
-					// Полный сброс данных
-					await resetData(chatId, messageId, userInfo);
-					break;
-
-				case "reset_last":
-					// Сброс только последнего ввода
-					await resetLastInput(chatId, messageId, userInfo);
 					break;
 
 				case "help":

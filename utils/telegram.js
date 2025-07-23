@@ -1,87 +1,17 @@
 // msg, chatd
 const TELEGRAM_API_URL = `https://api.telegram.org/bot${process.env.BOT_TOKEN}`;
 
-// Модуль для работы с файловой системой
-import fs from 'fs';
-import path from 'path';
-
-// Путь к файлу с данными пользователей
-const USERS_FILE_PATH = path.join(process.cwd(), 'users.json');
-
-// Функция для загрузки пользователей из файла
-function loadUsers() {
-	try {
-		if (fs.existsSync(USERS_FILE_PATH)) {
-			const data = fs.readFileSync(USERS_FILE_PATH, 'utf8');
-			return JSON.parse(data);
-		}
-	} catch (error) {
-		console.error('Ошибка загрузки пользователей:', error.message);
-	}
-	return [];
-}
-
-// Функция для сохранения пользователей в файл
-function saveUsers(users) {
-	try {
-		fs.writeFileSync(USERS_FILE_PATH, JSON.stringify(users, null, 2), 'utf8');
-	} catch (error) {
-		console.error('Ошибка сохранения пользователей:', error.message);
-	}
-}
-
-// Функция для добавления или обновления пользователя
-function trackUser(chatId, userInfo = {}) {
-	const users = loadUsers();
-	const polandTime = getPolandTime();
-	
-	// Ищем существующего пользователя
-	const existingUserIndex = users.findIndex(user => user.chatId === chatId);
-	
-	if (existingUserIndex !== -1) {
-		// Обновляем существующего пользователя
-		users[existingUserIndex].lastSeen = polandTime.toISOString();
-		users[existingUserIndex].totalInteractions = (users[existingUserIndex].totalInteractions || 0) + 1;
-		
-		// Обновляем дополнительную информацию, если она есть
-		if (userInfo.username) users[existingUserIndex].username = userInfo.username;
-		if (userInfo.firstName) users[existingUserIndex].firstName = userInfo.firstName;
-		if (userInfo.lastName) users[existingUserIndex].lastName = userInfo.lastName;
-	} else {
-		// Добавляем нового пользователя
-		const newUser = {
-			chatId: chatId,
-			firstSeen: polandTime.toISOString(),
-			lastSeen: polandTime.toISOString(),
-			totalInteractions: 1,
-			username: userInfo.username || null,
-			firstName: userInfo.firstName || null,
-			lastName: userInfo.lastName || null
-		};
-		users.push(newUser);
-	}
-	
-	saveUsers(users);
-}
-
-// Функция для получения статистики пользователей
-function getUserStats() {
-	const users = loadUsers();
-	const now = getPolandTime();
-	const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-	const oneWeekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-	
-	const activeToday = users.filter(user => new Date(user.lastSeen) > oneDayAgo).length;
-	const activeThisWeek = users.filter(user => new Date(user.lastSeen) > oneWeekAgo).length;
-	const totalInteractions = users.reduce((sum, user) => sum + (user.totalInteractions || 0), 0);
-	
-	return {
-		totalUsers: users.length,
-		activeToday,
-		activeThisWeek,
-		totalInteractions
-	};
-}
+// Импорт функций для работы с базой данных
+import {
+	initializeDatabase,
+	trackUser,
+	getUserStats,
+	saveUserSums,
+	getUserSums,
+	addTipHistory,
+	getUserTipHistory,
+	resetUserSums
+} from './database.js';
 
 // Получение текущего времени в польском часовом поясе
 function getPolandTime() {
@@ -89,11 +19,9 @@ function getPolandTime() {
 	return new Date(now.toLocaleString("en-US", {timeZone: "Europe/Warsaw"}));
 }
 
-// Переменные для хранения данных
-let expectedSum = 0; // Сумма, которую должны получить
-let receivedSum = 0; // Сумма, которую получили
+// Переменные для хранения данных - теперь используется база данных для персистентности
+// Глобальные переменные остаются только для совместимости со старыми функциями
 let lastResetDate = getPolandTime().toISOString(); // Время последнего сброса в польском часовом поясе
-let lastInput = null; // 'expected' или 'received' - что было введено последним
 
 // Статистика и мониторинг бота
 let botStats = {
@@ -118,7 +46,8 @@ function scheduleDelete(chatId, messageId, delayMs) {
 }
 
 // Обновление статистики бота
-function updateBotStats(chatId, userInfo = {}) {
+// Обновление статистики бота
+async function updateBotStats(chatId, userInfo = {}) {
 	const now = getPolandTime();
 	
 	// Обновляем общую статистику
@@ -133,8 +62,12 @@ function updateBotStats(chatId, userInfo = {}) {
 	const oneHourAgo = now.getTime() - (60 * 60 * 1000);
 	botStats.messagesLastHour = botStats.messagesLastHour.filter(timestamp => timestamp > oneHourAgo);
 	
-	// Отслеживаем пользователя в файле
-	trackUser(chatId, userInfo);
+	// Отслеживаем пользователя в базе данных
+	try {
+		await trackUser(chatId, userInfo);
+	} catch (error) {
+		console.error('Ошибка отслеживания пользователя:', error.message);
+	}
 	
 	// Планируем обновление описания бота
 	scheduleDescriptionUpdate();
@@ -368,11 +301,7 @@ function createMainMenu() {
 		inline_keyboard: [
 			[{ text: "1️⃣ Ввести ожидаемую сумму", callback_data: "input_expected" }],
 			[{ text: "2️⃣ Ввести полученную сумму", callback_data: "input_received" }],
-			[{ text: "📊 Показать итог", callback_data: "show_summary" }],
-			[
-				{ text: "🔄 Сбросить всё", callback_data: "reset_sum" },
-				{ text: "↩️ Сбросить последнее", callback_data: "reset_last" },
-			],
+			[{ text: "📊 Показать итог и сбросить", callback_data: "show_summary" }],
 			[{ text: "ℹ️ Справка", callback_data: "help" }],
 		],
 	};
@@ -381,8 +310,19 @@ function createMainMenu() {
 // Главное сообщение с текущими суммами
 export async function showMainInterface(chatId, messageId = null, userInfo = {}) {
 	checkDateAndReset();
-	updateBotStats(chatId, userInfo); // Обновляем статистику
+	await updateBotStats(chatId, userInfo); // Обновляем статистику
 
+	// Получаем текущие суммы пользователя из базы данных
+	let userSums;
+	try {
+		userSums = await getUserSums(chatId);
+	} catch (error) {
+		console.error('Ошибка получения сумм пользователя:', error.message);
+		userSums = { expected_sum: 0, received_sum: 0, last_input: null };
+	}
+
+	const expectedSum = userSums.expected_sum || 0;
+	const receivedSum = userSums.received_sum || 0;
 	const date = getReadableDate();
 	const difference = receivedSum - expectedSum;
 	const differenceText =
@@ -402,7 +342,7 @@ export async function showMainInterface(chatId, messageId = null, userInfo = {})
 	const { timeStatus, loadStatus, messagesThisHour } = getBotStatus();
 	const uptime = getBotUptime();
 
-	const text = `💰 <b>Калькулятор чая для Dominos</b>
+	const text = `💰 <b>Калькулятор чаевых для Dominos</b>
 	
 📅 <i>${date}</i>
 🎯 Ожидаемая сумма: <b>${expectedSum}</b>
@@ -410,6 +350,8 @@ export async function showMainInterface(chatId, messageId = null, userInfo = {})
 📊 Твой напивек: <b>${differenceText}</b>
 
 🕐 <i>Автосброс ${nextResetInfo} (польское время)</i>
+${timeStatus} • ${loadStatus}
+📈 Сообщений за час: ${messagesThisHour} • Работает: ${uptime}
 
 <i>Используйте кнопки для ввода сумм</i>`;
 
@@ -425,8 +367,19 @@ export async function showMainInterface(chatId, messageId = null, userInfo = {})
 // Обработка команды /итог с красивым форматированием
 export async function summaryCommand(chatId, messageId = null, userInfo = {}) {
 	checkDateAndReset();
-	updateBotStats(chatId, userInfo); // Обновляем статистику
+	await updateBotStats(chatId, userInfo); // Обновляем статистику
 
+	// Получаем текущие суммы пользователя из базы данных
+	let userSums;
+	try {
+		userSums = await getUserSums(chatId);
+	} catch (error) {
+		console.error('Ошибка получения сумм пользователя:', error.message);
+		userSums = { expected_sum: 0, received_sum: 0, last_input: null };
+	}
+
+	const expectedSum = userSums.expected_sum || 0;
+	const receivedSum = userSums.received_sum || 0;
 	const date = getReadableDate();
 	const difference = receivedSum - expectedSum;
 	const differenceText =
@@ -452,19 +405,47 @@ export async function summaryCommand(chatId, messageId = null, userInfo = {}) {
 	const { timeStatus, loadStatus } = getBotStatus();
 	const uptime = getBotUptime();
 
+	// Сохраняем в историю если есть данные
+	if (expectedSum > 0 || receivedSum > 0) {
+		try {
+			await addTipHistory(chatId, expectedSum, receivedSum);
+		} catch (error) {
+			console.error('Ошибка сохранения в историю:', error.message);
+		}
+	}
+
+	// Получаем историю чаевых за последние 7 дней
+	let historyText = "";
+	try {
+		const history = await getUserTipHistory(chatId, 7);
+		if (history.length > 0) {
+			historyText = "\n\n📈 <b>История за неделю:</b>\n";
+			history.slice(0, 5).forEach((record, index) => {
+				const recordDate = new Date(record.timestamp).toLocaleDateString('ru-RU');
+				const tipSign = record.tip_amount >= 0 ? "+" : "";
+				historyText += `${index + 1}. ${recordDate}: ${tipSign}${record.tip_amount}\n`;
+			});
+			if (history.length > 5) {
+				historyText += `... и еще ${history.length - 5} записей\n`;
+			}
+		}
+	} catch (error) {
+		console.error('Ошибка получения истории:', error.message);
+	}
+
 	// Создаем отдельное сообщение с итогом
 	const summaryText = `${statusEmoji} <b>${statusText}</b>
 
 📅 Дата: <i>${date}</i>
 🎯 Ожидалось: <b>${expectedSum}</b>
 🏧 Получено: <b>${receivedSum}</b>
-📊 Разность: <b>${differenceText}</b>
+📊 Разность: <b>${differenceText}</b>${historyText}
 
 🤖 <b>Статус системы:</b>
 ${timeStatus} • ${loadStatus}
 ⏱️ Работает: ${uptime} • 👥 Всего пользователей: ${botStats.totalUsers.size}
 
-✅ <i>Данные сброшены</i>`;
+✅ <i>Данные сброшены и сохранены в историю</i>`;
 
 	// Отправляем отдельное сообщение с итогом
 	const summaryMessage = await sendMessage(chatId, summaryText);
@@ -473,19 +454,20 @@ ${timeStatus} • ${loadStatus}
 	if (summaryMessage && summaryMessage.result) {
 		await pinMessage(chatId, summaryMessage.result.message_id);
 
-		// Планируем удаление закрепленного сообщения через 8 секунд
-		scheduleDelete(chatId, summaryMessage.result.message_id, 8000);
+		// Планируем удаление закрепленного сообщения через 10 секунд
+		scheduleDelete(chatId, summaryMessage.result.message_id, 10000);
 	}
 
-	// Сбрасываем суммы
-	expectedSum = 0;
-	receivedSum = 0;
-	lastResetDate = new Date().toISOString();
-	userStates.clear();
+	// Сбрасываем суммы пользователя в базе данных
+	try {
+		await resetUserSums(chatId);
+	} catch (error) {
+		console.error('Ошибка сброса сумм пользователя:', error.message);
+	}
 
 	// Обновляем главное меню (показываем обнуленные суммы)
 	if (messageId) {
-		await showMainInterface(chatId, messageId);
+		await showMainInterface(chatId, messageId, userInfo);
 	}
 }
 
@@ -499,7 +481,7 @@ export async function handleNumberInput(
 	userInfo = {}
 ) {
 	checkDateAndReset();
-	updateBotStats(chatId, userInfo); // Обновляем статистику
+	await updateBotStats(chatId, userInfo); // Обновляем статистику
 
 	// Удаляем сообщение пользователя для чистоты чата
 	await deleteMessage(chatId, userMessageId);
@@ -528,23 +510,42 @@ export async function handleNumberInput(
 		return false;
 	}
 
+	// Получаем текущие суммы пользователя
+	let userSums;
+	try {
+		userSums = await getUserSums(chatId);
+	} catch (error) {
+		console.error('Ошибка получения сумм пользователя:', error.message);
+		userSums = { expected_sum: 0, received_sum: 0, last_input: null };
+	}
+
 	let notification = "";
+	let newExpectedSum = userSums.expected_sum || 0;
+	let newReceivedSum = userSums.received_sum || 0;
+	let newLastInput = userSums.last_input;
 
 	if (userState.mode === "waiting_expected") {
-		expectedSum = number;
-		lastInput = "expected";
+		newExpectedSum = number;
+		newLastInput = "expected";
 		notification = `🎯 Ожидаемая сумма: ${number}`;
 		userStates.delete(chatId); // Очищаем режим
 	} else if (userState.mode === "waiting_received") {
-		receivedSum = number;
-		lastInput = "received";
+		newReceivedSum = number;
+		newLastInput = "received";
 		notification = `💸 Полученная сумма: ${number}`;
 		userStates.delete(chatId); // Очищаем режим
 	}
 
+	// Сохраняем обновленные суммы в базу данных
+	try {
+		await saveUserSums(chatId, newExpectedSum, newReceivedSum, newLastInput);
+	} catch (error) {
+		console.error('Ошибка сохранения сумм пользователя:', error.message);
+	}
+
 	// Обновляем главное меню с новыми суммами
 	if (mainMenuMessageId) {
-		await showMainInterface(chatId, mainMenuMessageId);
+		await showMainInterface(chatId, mainMenuMessageId, userInfo);
 	}
 
 	// Отправляем уведомление
@@ -558,7 +559,7 @@ export async function handleNumberInput(
 
 // Показать справку
 export async function showHelp(chatId, messageId = null, userInfo = {}) {
-	updateBotStats(chatId, userInfo); // Обновляем статистику
+	await updateBotStats(chatId, userInfo); // Обновляем статистику
 	
 	const { timeStatus, loadStatus } = getBotStatus();
 	const uptime = getBotUptime();
@@ -623,7 +624,7 @@ export async function pinMessage(chatid, messageId) {
 
 // Установка режима ввода ожидаемой суммы
 export async function setExpectedInputMode(chatId, messageId = null, userInfo = {}) {
-	updateBotStats(chatId, userInfo); // Обновляем статистику
+	await updateBotStats(chatId, userInfo); // Обновляем статистику
 	userStates.set(chatId, { mode: "waiting_expected" });
 
 	const text = `🎯 <b>Ввод ожидаемой суммы</b>
@@ -647,7 +648,7 @@ export async function setExpectedInputMode(chatId, messageId = null, userInfo = 
 
 // Установка режима ввода полученной суммы
 export async function setReceivedInputMode(chatId, messageId = null, userInfo = {}) {
-	updateBotStats(chatId, userInfo); // Обновляем статистику
+	await updateBotStats(chatId, userInfo); // Обновляем статистику
 	userStates.set(chatId, { mode: "waiting_received" });
 
 	const text = `💸 <b>Ввод полученной суммы</b>
@@ -666,64 +667,6 @@ export async function setReceivedInputMode(chatId, messageId = null, userInfo = 
 		return await editMessage(chatId, messageId, text, keyboard);
 	} else {
 		return await sendMessage(chatId, text, keyboard);
-	}
-}
-
-// Сброс всех данных
-export async function resetData(chatId, messageId = null, userInfo = {}) {
-	updateBotStats(chatId, userInfo); // Обновляем статистику
-	
-	expectedSum = 0;
-	receivedSum = 0;
-	lastInput = null;
-	userStates.delete(chatId); // Очищаем состояние пользователя
-
-	// Отправляем уведомление о сбросе
-	const notification = await sendMessage(chatId, "🔄 Все данные сброшены");
-	if (notification && notification.result) {
-		scheduleDelete(chatId, notification.result.message_id, 1500);
-	}
-
-	// Обновляем главное меню
-	if (messageId) {
-		await showMainInterface(chatId, messageId);
-	}
-}
-
-// Сброс последнего ввода
-export async function resetLastInput(chatId, messageId = null, userInfo = {}) {
-	updateBotStats(chatId, userInfo); // Обновляем статистику
-	
-	if (!lastInput) {
-		// Если нет последнего ввода
-		const notification = await sendMessage(chatId, "❌ Нет данных для сброса");
-		if (notification && notification.result) {
-			scheduleDelete(chatId, notification.result.message_id, 2000);
-		}
-		return;
-	}
-
-	let resetText = "";
-	if (lastInput === "expected") {
-		expectedSum = 0;
-		resetText = "↩️ Ожидаемая сумма сброшена";
-	} else if (lastInput === "received") {
-		receivedSum = 0;
-		resetText = "↩️ Полученная сумма сброшена";
-	}
-
-	lastInput = null; // Очищаем информацию о последнем вводе
-	userStates.delete(chatId); // Очищаем состояние пользователя
-
-	// Отправляем уведомление о сбросе
-	const notification = await sendMessage(chatId, resetText);
-	if (notification && notification.result) {
-		scheduleDelete(chatId, notification.result.message_id, 1500);
-	}
-
-	// Обновляем главное меню
-	if (messageId) {
-		await showMainInterface(chatId, messageId);
 	}
 }
 
@@ -863,7 +806,15 @@ async function updateBotDescription() {
 		const { timeStatus, loadStatus, messagesThisHour } = getBotStatus();
 		const uptime = getBotUptime();
 		const totalUsers = botStats.totalUsers.size;
-		const userStats = getUserStats();
+		
+		// Получаем статистику из базы данных
+		let userStats;
+		try {
+			userStats = await getUserStats();
+		} catch (error) {
+			console.error('Ошибка получения статистики пользователей:', error.message);
+			userStats = { totalUsers: 0, activeToday: 0, activeThisWeek: 0, totalInteractions: 0 };
+		}
 		
 		// Краткое описание с нагрузкой и статистикой
 		const description = `${timeStatus} • ${loadStatus}
@@ -976,9 +927,6 @@ export async function stopBotProfileSystem() {
 	stopDescriptionUpdateTimer();
 	console.log("🛑 Система автоматического обновления профиля остановлена");
 }
-
-// Экспорт функций для работы с пользователями
-export { loadUsers, saveUsers, trackUser, getUserStats };
 
 // Обработка завершения процесса для корректной остановки таймеров
 process.on('SIGINT', async () => {
